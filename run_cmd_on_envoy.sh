@@ -8,8 +8,16 @@ SSH_KEY="/var/lib/rubrik/certs/envoy_ng/envoy_ng_ssh.pem"
 SSH_USER="ubuntu"
 SSH_HOST="127.128.0.1"
 
-# Define the list of ports to run the command on
-PORTS=(33792 33795 33798 33801)
+# Fetch the list of ports dynamically from envoy_config table
+PORTS=($(cqlsh -k sd -e "select ssh_pfp_assignment from envoy_config" \
+  2>/dev/null | grep -E '^\s*[0-9]+\s*$' | tr -d ' '))
+
+# Check if we got any ports
+if [ ${#PORTS[@]} -eq 0 ]; then
+  echo "Error: Could not fetch ports from envoy_config table."
+  echo "Make sure cqlsh is available and the database is accessible."
+  exit 1
+fi
 
 # Function to count connections on port 902
 count_902_connections() {
