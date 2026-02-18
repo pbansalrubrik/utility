@@ -8,15 +8,30 @@ SSH_KEY="/var/lib/rubrik/certs/envoy_ng/envoy_ng_ssh.pem"
 SSH_USER="ubuntu"
 SSH_HOST="127.128.0.1"
 
-# Fetch the list of ports dynamically from envoy_config table
-PORTS=($(cqlsh -k sd -e "select ssh_pfp_assignment from envoy_config" \
-  2>/dev/null | grep -E '^\s*[0-9]+\s*$' | tr -d ' '))
+# Fetch the list of ports and corresponding envoy hostnames dynamically from
+# envoy_config table. We parse the cqlsh tabular output by looking for lines
+# where the first column is a numeric ssh_pfp_assignment followed by a '|'
+# and envoy_hostname.
+PORTS=()
+ENVOY_HOSTNAMES=()
+
+while IFS='|' read -r port_col hostname_col _; do
+	# Trim whitespace around columns
+	port=$(echo "$port_col" | tr -d '[:space:]')
+	hostname=$(echo "$hostname_col" | xargs)
+	# Only keep lines where the first column is a numeric port
+	if [[ -n "$port" && "$port" =~ ^[0-9]+$ ]]; then
+		PORTS+=("$port")
+		ENVOY_HOSTNAMES+=("$hostname")
+	fi
+done < <(cqlsh -k sd -e "select ssh_pfp_assignment, envoy_hostname from envoy_config" \
+	2>/dev/null | grep -E '^[[:space:]]*[0-9]+[[:space:]]*\|' | sort -n)
 
 # Check if we got any ports
 if [ ${#PORTS[@]} -eq 0 ]; then
-  echo "Error: Could not fetch ports from envoy_config table."
-  echo "Make sure cqlsh is available and the database is accessible."
-  exit 1
+	echo "Error: Could not fetch ports from envoy_config table."
+	echo "Make sure cqlsh is available and the database is accessible."
+	exit 1
 fi
 
 # Function to count connections on port 902
@@ -135,8 +150,10 @@ echo "Attempting to run command: \"$COMMAND_TO_RUN\" on ports: ${PORTS[@]}"
 echo "-------------------------------------------------------------------"
 
 # Loop through each port and execute the command
-for PORT in "${PORTS[@]}"; do
-  echo "--- Running on port: $PORT ---"
+for idx in "${!PORTS[@]}"; do
+	PORT="${PORTS[$idx]}"
+	ENVOY_HOSTNAME="${ENVOY_HOSTNAMES[$idx]}"
+	echo "--- Running on port: $PORT (envoy_hostname: ${ENVOY_HOSTNAME:-unknown}) ---"
   # Construct and execute the SSH command
   # The 'eval' command is used here to correctly handle the COMMAND_TO_RUN
   # which might contain pipes or other shell special characters.
