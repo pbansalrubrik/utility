@@ -8,31 +8,64 @@ SSH_KEY="/var/lib/rubrik/certs/envoy_ng/envoy_ng_ssh.pem"
 SSH_USER="ubuntu"
 SSH_HOST="127.128.0.1"
 
-# Fetch the list of ports and corresponding envoy hostnames dynamically from
-# envoy_config table. We parse the cqlsh tabular output by looking for lines
-# where the first column is a numeric ssh_pfp_assignment followed by a '|'
-# and envoy_hostname.
-PORTS=()
-ENVOY_HOSTNAMES=()
-
-while IFS='|' read -r port_col hostname_col _; do
-	# Trim whitespace around columns
-	port=$(echo "$port_col" | tr -d '[:space:]')
-	hostname=$(echo "$hostname_col" | xargs)
-	# Only keep lines where the first column is a numeric port
-	if [[ -n "$port" && "$port" =~ ^[0-9]+$ ]]; then
-		PORTS+=("$port")
-		ENVOY_HOSTNAMES+=("$hostname")
-	fi
-done < <(cqlsh -k sd -e "select ssh_pfp_assignment, envoy_hostname from envoy_config" \
-	2>/dev/null | grep -E '^[[:space:]]*[0-9]+[[:space:]]*\|' | sort -n)
+# Fetch the list of ports dynamically from envoy_config table
+PORTS=($(cqlsh -k sd -e "select ssh_pfp_assignment from envoy_config" \
+  2>/dev/null | grep -E '^\s*[0-9]+\s*$' | tr -d ' '))
 
 # Check if we got any ports
 if [ ${#PORTS[@]} -eq 0 ]; then
-	echo "Error: Could not fetch ports from envoy_config table."
-	echo "Make sure cqlsh is available and the database is accessible."
-	exit 1
+  echo "Error: Could not fetch ports from envoy_config table."
+  echo "Make sure cqlsh is available and the database is accessible."
+  exit 1
 fi
+
+# Function to copy a file to all envoys
+copy_file() {
+  local source_path="$1"
+  local dest_path="$2"
+
+  # Validate arguments
+  if [ -z "$source_path" ] || [ -z "$dest_path" ]; then
+    echo "Error: Both source and destination paths are required."
+    echo "Usage: $0 copy_file <source_path> <destination_path>"
+    return 1
+  fi
+
+  # Check if source file exists
+  if [ ! -f "$source_path" ]; then
+    echo "Error: Source file '$source_path' does not exist."
+    return 1
+  fi
+
+  echo "Copying '$source_path' to '$dest_path' on all envoys..."
+  echo "-------------------------------------------------------------------"
+
+  local success_count=0
+  local fail_count=0
+
+  # Loop through each port and copy the file
+  for PORT in "${PORTS[@]}"; do
+    echo "--- Copying to envoy on port: $PORT ---"
+    if sudo scp -i "$SSH_KEY" -P "$PORT" "$source_path" "$SSH_USER@$SSH_HOST:$dest_path" 2>&1; then
+      echo "Success"
+      success_count=$((success_count + 1))
+    else
+      echo "Failed to copy"
+      fail_count=$((fail_count + 1))
+    fi
+    echo "-------------------------------------------------------------------"
+  done
+
+  echo ""
+  echo "SUMMARY:"
+  echo "========"
+  echo "Successfully copied to: $success_count envoy(s)"
+  if [ $fail_count -gt 0 ]; then
+    echo "Failed to copy to: $fail_count envoy(s)"
+  fi
+
+  return $fail_count
+}
 
 # Function to count connections on port 902
 count_902_connections() {
@@ -110,7 +143,14 @@ if [ -z "$1" ]; then
   echo "Special commands:"
   echo "  $0 \"count-902\"              - Count all connections on port 902 (single run)"
   echo "  $0 \"count-902\" \"continuous\"  - Monitor port 902 connections every minute and log to file"
+  echo "  $0 copy_file <source> <dest> - Copy a file from this machine to all envoys"
   exit 1
+fi
+
+# Check for copy_file command
+if [ "$1" = "copy_file" ]; then
+  copy_file "$2" "$3"
+  exit $?
 fi
 
 # Check for special command to count 902 connections
@@ -150,10 +190,8 @@ echo "Attempting to run command: \"$COMMAND_TO_RUN\" on ports: ${PORTS[@]}"
 echo "-------------------------------------------------------------------"
 
 # Loop through each port and execute the command
-for idx in "${!PORTS[@]}"; do
-	PORT="${PORTS[$idx]}"
-	ENVOY_HOSTNAME="${ENVOY_HOSTNAMES[$idx]}"
-	echo "--- Running on port: $PORT (envoy_hostname: ${ENVOY_HOSTNAME:-unknown}) ---"
+for PORT in "${PORTS[@]}"; do
+  echo "--- Running on port: $PORT ---"
   # Construct and execute the SSH command
   # The 'eval' command is used here to correctly handle the COMMAND_TO_RUN
   # which might contain pipes or other shell special characters.
