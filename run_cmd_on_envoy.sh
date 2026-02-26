@@ -1,3 +1,4 @@
+
 #!/bin/bash
 
 # This script executes a given command on multiple SSH ports.
@@ -8,15 +9,69 @@ SSH_KEY="/var/lib/rubrik/certs/envoy_ng/envoy_ng_ssh.pem"
 SSH_USER="ubuntu"
 SSH_HOST="127.128.0.1"
 
-# Fetch the list of ports dynamically from envoy_config table
-PORTS=($(cqlsh -k sd -e "select ssh_pfp_assignment from envoy_config" \
-  2>/dev/null | grep -E '^\s*[0-9]+\s*$' | tr -d ' '))
+# Parse --ssh_port / --envoy_hostname arguments (mutually exclusive)
+SSH_PORT_FILTER=""
+ENVOY_HOSTNAME_FILTER=""
+ARGS=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --ssh_port)
+      if [[ -z "$2" || ! "$2" =~ ^[0-9]+$ ]]; then
+        echo "Error: --ssh_port requires a numeric port value."
+        exit 1
+      fi
+      SSH_PORT_FILTER="$2"
+      shift 2
+      ;;
+    --envoy_hostname)
+      if [[ -z "$2" ]]; then
+        echo "Error: --envoy_hostname requires a hostname value."
+        exit 1
+      fi
+      ENVOY_HOSTNAME_FILTER="$2"
+      shift 2
+      ;;
+    --*)
+      echo "Error: Unknown option '$1'. Did you mean --ssh_port or --envoy_hostname?"
+      exit 1
+      ;;
+    *)
+      ARGS+=("$1")
+      shift
+      ;;
+  esac
+done
+set -- "${ARGS[@]}"
 
-# Check if we got any ports
-if [ ${#PORTS[@]} -eq 0 ]; then
-  echo "Error: Could not fetch ports from envoy_config table."
-  echo "Make sure cqlsh is available and the database is accessible."
+if [[ -n "$SSH_PORT_FILTER" && -n "$ENVOY_HOSTNAME_FILTER" ]]; then
+  echo "Error: --ssh_port and --envoy_hostname are mutually exclusive."
   exit 1
+fi
+
+if [[ -n "$SSH_PORT_FILTER" ]]; then
+  PORTS=("$SSH_PORT_FILTER")
+  echo "Targeting single envoy on SSH port: $SSH_PORT_FILTER"
+elif [[ -n "$ENVOY_HOSTNAME_FILTER" ]]; then
+  # Look up ssh_pfp_assignment for the given hostname from envoy_config
+  mapfile -t PORTS < <(cqlsh -k sd -e \
+    "select ssh_pfp_assignment from envoy_config where envoy_hostname = '$ENVOY_HOSTNAME_FILTER' ALLOW FILTERING" \
+    2>/dev/null | grep -E '^\s*[0-9]+\s*$' | tr -d ' ')
+  if [ ${#PORTS[@]} -eq 0 ]; then
+    echo "Error: No envoy found with hostname '$ENVOY_HOSTNAME_FILTER' in envoy_config table."
+    exit 1
+  fi
+  echo "Targeting envoy '$ENVOY_HOSTNAME_FILTER' on SSH port: ${PORTS[0]}"
+else
+  # Fetch the list of ports dynamically from envoy_config table
+  mapfile -t PORTS < <(cqlsh -k sd -e "select ssh_pfp_assignment from envoy_config" \
+    2>/dev/null | grep -E '^\s*[0-9]+\s*$' | tr -d ' ')
+
+  # Check if we got any ports
+  if [ ${#PORTS[@]} -eq 0 ]; then
+    echo "Error: Could not fetch ports from envoy_config table."
+    echo "Make sure cqlsh is available and the database is accessible."
+    exit 1
+  fi
 fi
 
 # Function to copy a file to all envoys
@@ -137,8 +192,16 @@ count_902_connections() {
 
 # Check if a command was provided as an argument
 if [ -z "$1" ]; then
-  echo "Usage: $0 \"<command_to_run>\""
+  echo "Usage: $0 [--ssh_port <port> | --envoy_hostname <hostname>] \"<command_to_run>\""
   echo "Example: $0 \"systemctl status vddk | grep Active\""
+  echo "Example: $0 --ssh_port 34107 \"systemctl status ssf\""
+  echo "Example: $0 --envoy_hostname hsve-ngenvoy-03 \"systemctl status ssf\""
+  echo ""
+  echo "Options:"
+  echo "  --ssh_port <port>            - Run on a single envoy with the given SSH port"
+  echo "                                 (skips envoy_config lookup; use ssh_pfp_assignment value)"
+  echo "  --envoy_hostname <hostname>  - Run on a single envoy by hostname"
+  echo "                                 (looks up ssh_pfp_assignment from envoy_config)"
   echo ""
   echo "Special commands:"
   echo "  $0 \"count-902\"              - Count all connections on port 902 (single run)"
@@ -197,7 +260,7 @@ for PORT in "${PORTS[@]}"; do
   # which might contain pipes or other shell special characters.
   # Be cautious with 'eval' if the input command is untrusted, but for
   # internal use with known commands, it's appropriate.
-  eval "sudo ssh -i \"$SSH_KEY\" \"$SSH_USER@$SSH_HOST\" -p \"$PORT\" \"$COMMAND_TO_RUN\""
+  eval "sudo ssh -i \"$SSH_KEY\" \"$SSH_USER@$SSH_HOST\" -p \"$PORT\" -- \"$COMMAND_TO_RUN\""
   echo "-------------------------------------------------------------------"
 done
 
