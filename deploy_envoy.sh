@@ -11,8 +11,6 @@ echo $cluster_id
 
 ./deployment/cluster.sh $cluster_id copy nodes ./src/cpp/build/current/envoy_ng/controller/envoy_controller_main /opt/rubrik/src/cpp/build/current/envoy_ng/controller/envoy_controller_main
 
-
-
 ./deployment/cluster.sh $cluster_id copy nodes ./src/cpp/build/current/envoy_ng/controller/envoycontroller_test_client_main /opt/rubrik/src/cpp/build/current/envoy_ng/controller/envoycontroller_test_client_main
 
 ./deployment/cluster.sh $cluster_id copy nodes ./bazel-out/k8-opt/bin/_solib_k8/*grpc* /opt/rubrik/src/_solib_k8/
