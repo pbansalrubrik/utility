@@ -1,4 +1,3 @@
-
 #!/bin/bash
 
 # This script executes a given command on multiple SSH ports.
@@ -48,9 +47,25 @@ if [[ -n "$SSH_PORT_FILTER" && -n "$ENVOY_HOSTNAME_FILTER" ]]; then
   exit 1
 fi
 
+# Build a port-to-hostname map from envoy_config
+declare -A PORT_TO_HOSTNAME
+_build_port_hostname_map() {
+  while IFS='|' read -r hostname port; do
+    hostname="${hostname// /}"
+    port="${port// /}"
+    if [[ -n "$port" && "$port" =~ ^[0-9]+$ ]]; then
+      PORT_TO_HOSTNAME["$port"]="$hostname"
+    fi
+  done < <(cqlsh -k sd -e \
+    "select envoy_hostname, ssh_pfp_assignment from envoy_config" \
+    2>/dev/null | grep -E '\|.*[0-9]' | grep -v '\-\-\-')
+}
+
 if [[ -n "$SSH_PORT_FILTER" ]]; then
   PORTS=("$SSH_PORT_FILTER")
-  echo "Targeting single envoy on SSH port: $SSH_PORT_FILTER"
+  _build_port_hostname_map
+  local_hostname="${PORT_TO_HOSTNAME[$SSH_PORT_FILTER]:-unknown}"
+  echo "Targeting single envoy on SSH port: $SSH_PORT_FILTER (hostname: $local_hostname)"
 elif [[ -n "$ENVOY_HOSTNAME_FILTER" ]]; then
   # Look up ssh_pfp_assignment for the given hostname from envoy_config
   mapfile -t PORTS < <(cqlsh -k sd -e \
@@ -60,6 +75,7 @@ elif [[ -n "$ENVOY_HOSTNAME_FILTER" ]]; then
     echo "Error: No envoy found with hostname '$ENVOY_HOSTNAME_FILTER' in envoy_config table."
     exit 1
   fi
+  _build_port_hostname_map
   echo "Targeting envoy '$ENVOY_HOSTNAME_FILTER' on SSH port: ${PORTS[0]}"
 else
   # Fetch the list of ports dynamically from envoy_config table
@@ -72,7 +88,15 @@ else
     echo "Make sure cqlsh is available and the database is accessible."
     exit 1
   fi
+  _build_port_hostname_map
 fi
+
+# Helper to get display label for a port (includes hostname)
+_port_label() {
+  local port="$1"
+  local hostname="${PORT_TO_HOSTNAME[$port]:-unknown}"
+  echo "$port ($hostname)"
+}
 
 # Function to copy a file to all envoys
 copy_file() {
@@ -100,7 +124,7 @@ copy_file() {
 
   # Loop through each port and copy the file
   for PORT in "${PORTS[@]}"; do
-    echo "--- Copying to envoy on port: $PORT ---"
+    echo "--- Copying to envoy on port: $(_port_label "$PORT") ---"
     if sudo scp -i "$SSH_KEY" -P "$PORT" "$source_path" "$SSH_USER@$SSH_HOST:$dest_path" 2>&1; then
       echo "Success"
       success_count=$((success_count + 1))
@@ -133,7 +157,7 @@ count_902_connections() {
 
   # Loop through each port and collect connection data
   for PORT in "${PORTS[@]}"; do
-    echo "--- Checking port: $PORT ---"
+    echo "--- Checking port: $(_port_label "$PORT") ---"
 
     # Run the netstat command and capture output
     if sudo ssh -i "$SSH_KEY" "$SSH_USER@$SSH_HOST" -p "$PORT" "netstat -an | grep -w 902" 2>/dev/null > "$temp_file"; then
@@ -254,7 +278,7 @@ echo "-------------------------------------------------------------------"
 
 # Loop through each port and execute the command
 for PORT in "${PORTS[@]}"; do
-  echo "--- Running on port: $PORT ---"
+  echo "--- Running on port: $(_port_label "$PORT") ---"
   # Construct and execute the SSH command
   # The 'eval' command is used here to correctly handle the COMMAND_TO_RUN
   # which might contain pipes or other shell special characters.
