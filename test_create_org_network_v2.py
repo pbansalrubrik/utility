@@ -120,6 +120,25 @@ register_api(
 )
 
 register_api(
+    name="orgNetwork",
+    query="""
+    query OrgNetwork($tenantNetworkId: UUID!) {
+      orgNetwork(tenantNetworkId: $tenantNetworkId) {
+        orgNetworkId
+        orgNetworkName
+        cluster {
+          id
+          name
+        }
+        liveMountIps
+      }
+    }
+    """,
+    required_args=["org-network-id"],
+    description="Get a single org network by ID.",
+)
+
+register_api(
     name="deleteOrgNetwork",
     query="""
     mutation DeleteOrgNetwork($input: DeleteOrgNetworkInput!) {
@@ -154,8 +173,10 @@ def build_variables(api_name, args):
                 "name": args.org_network_name,
             }
         }
+    elif api_name == "orgNetwork":
+        return {"tenantNetworkId": args.org_network_id}
     elif api_name == "deleteOrgNetwork":
-        return {"input": {"orgNetworkId": args.org_network_id}}
+        return {"input": {"orgNetworkID": args.org_network_id}}
     elif api_name == "refreshOrgNetwork":
         return {"input": {"orgNetworkId": args.org_network_id}}
     elif api_name == "listOrgNetworks":
