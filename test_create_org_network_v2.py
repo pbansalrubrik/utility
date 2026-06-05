@@ -180,9 +180,13 @@ def build_variables(api_name, args):
     elif api_name == "refreshOrgNetwork":
         return {"input": {"orgNetworkId": args.org_network_id}}
     elif api_name == "listOrgNetworks":
+        filt = {}
         if getattr(args, "cluster_uuid", None):
-            return {"filter": {"rubrikCluster": [args.cluster_uuid]}}
-        return {}
+            filt["rubrikCluster"] = [args.cluster_uuid]
+        is_msp = getattr(args, "is_msp", None)
+        if is_msp is not None:
+            filt["isMsp"] = is_msp == "true"
+        return {"filter": filt} if filt else {}
     return {}
 
 
@@ -305,6 +309,14 @@ def main():
     parser.add_argument(
         "--org-network-id",
         help="Org network ID (for deleteOrgNetwork, refreshOrgNetwork)",
+    )
+    parser.add_argument(
+        "--is-msp",
+        choices=["true", "false"],
+        default=None,
+        help="(listOrgNetworks) Filter by org network scope: "
+        "true=only MSP/global-org rows, false=only enterprise rows, "
+        "omit=all rows (legacy behavior).",
     )
     args = parser.parse_args()
 
